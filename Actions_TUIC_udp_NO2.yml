@@ -1,0 +1,290 @@
+Name: Actions_TUIC_udp_NO2
+
+on:
+  workflow_dispatch:
+    inputs:
+      ZT_NETWORK_ID:
+        description: '你的 ZeroTier 网络 ID'
+        required: true
+        default: '645ae69a72a847d5'
+      PROXY_PASSWORD:
+        description: '代理服务的密码 (用于 TUIC)'
+        required: true
+        default: 'password123'
+      TUIC_PORT:
+        description: 'TUIC 监听端口'
+        required: true
+        default: '10004'
+      TUIC_UUID:
+        description: 'TUIC v5 的 UUID'
+        required: true
+        default: '83f6d100-0544-4bd5-88f0-da835c2604af'
+      HY2_PORT:
+        description: 'Hysteria2 监听端口'
+        required: true
+        default: '10005'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装基础工具
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y curl wget ifstat btop iperf3 jq openssl net-tools qrencode python3-qrcode
+
+      - name: 安装并配置 ZeroTier
+        run: |
+          curl -s https://install.zerotier.com | sudo bash
+          sudo systemctl stop zerotier-one
+          
+          # 导入现有的身份文件以固定 IP
+          if [ -f "./identity.secret" ] && [ -f "./identity.public" ]; then
+            sudo cp ./identity.secret /var/lib/zerotier-one/identity.secret
+            sudo cp ./identity.public /var/lib/zerotier-one/identity.public
+            sudo chmod 0600 /var/lib/zerotier-one/identity.secret
+          fi
+          
+          # 加载自建 planet 文件
+          if [ -f "./planet" ]; then
+            sudo cp ./planet /var/lib/zerotier-one/planet
+          fi
+          
+          sudo systemctl start zerotier-one
+          sleep 5
+
+      - name: 加入 ZeroTier 网络
+        run: |
+          sudo zerotier-cli join ${{ github.event.inputs.ZT_NETWORK_ID }}
+          echo "等待 ZeroTier 分配局域网 IP..."
+          for i in {1..20}; do
+            # 强化逻辑：抓取最后一列，通过 tr 分隔多地址，grep 排除 IPv6(冒号)，只取第一个 IPv4
+            ZT_IP=$(sudo zerotier-cli listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
+            if [[ $ZT_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "✅ 已分配到内网 IPv4: $ZT_IP"
+              break
+            fi
+            sleep 5
+          done
+
+      - name: 配置并开启 SSH 服务
+        run: |
+          sudo apt-get install -y openssh-server
+          echo "runner:kkk" | sudo chpasswd
+          echo "root:kkk" | sudo chpasswd
+          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo systemctl restart ssh
+          echo "✅ SSH 服务已开启，密码为: kkk"
+
+      - name: 网络环境优化 (极速模式)
+        run: |
+          # 1. 调大内核 UDP 缓冲区 (解决 TUIC/QUIC 高速下的丢包问题)
+          sudo sysctl -w net.core.rmem_max=33554432
+          sudo sysctl -w net.core.wmem_max=33554432
+          sudo sysctl -w net.ipv4.udp_mem='33554432 33554432 33554432'
+          
+          # 2. 禁用反向路径过滤 (解决 ZeroTier UDP 报文被拦截问题)
+          sudo sysctl -w net.ipv4.conf.all.rp_filter=0
+          sudo sysctl -w net.ipv4.conf.default.rp_filter=0
+          sudo sysctl -w net.ipv4.conf.eth0.rp_filter=0
+          
+          # 3. 开启 BBR 拥塞控制
+          sudo modprobe tcp_bbr
+          echo "net.core.default_qdisc=fq" | sudo tee -a /etc/sysctl.conf
+          echo "net.ipv4.tcp_congestion_control=bbr" | sudo tee -a /etc/sysctl.conf
+          sudo sysctl -p
+          
+          echo "✅ 内核参数优化成功"
+
+      - name: ZeroTier 链路优化 (MTU 锁定)
+        run: |
+          # 强化逻辑：使用 ip link show 匹配 zt 开头的网卡名，更加健壮
+          ZT_DEV=$(ip -o link show | grep "zt" | awk -F': ' '{print $2}' | cut -d'@' -f1 | head -n 1)
+          if [ -n "$ZT_DEV" ]; then
+            # 锁定 MTU 为 1280 解决公网传输中的分片导致的性能瓶颈
+            sudo ifconfig $ZT_DEV mtu 1280
+            echo "✅ ZeroTier 接口 $ZT_DEV MTU 已锁定为 1280"
+          else
+            echo "⚠️ 警告: 未找到 ZeroTier 网卡，跳过 MTU 优化"
+          fi
+
+      - name: 部署 TUIC, Hysteria2 与 iperf3
+        env:
+          PROXY_PASSWORD: ${{ github.event.inputs.PROXY_PASSWORD }}
+          TUIC_PORT: ${{ github.event.inputs.TUIC_PORT }}
+          TUIC_UUID: ${{ github.event.inputs.TUIC_UUID }}
+          HY2_PORT: ${{ github.event.inputs.HY2_PORT }}
+          HYSTERIA_BRUTAL_DEBUG: 1
+        run: |
+          # 强化逻辑：确保抓到的是 IPv4
+          ZT_IP=$(sudo zerotier-cli listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
+          
+          if [[ ! $ZT_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ 错误: 无法获取有效的 IPv4 地址 (当前抓取内容: $ZT_IP)"
+            exit 1
+          fi
+
+          # 1. 环境清理
+          sudo iptables -F
+          sudo ufw disable || true
+          
+          # 2. 证书生成 (通用)
+          mkdir -p ./certs
+          openssl req -x509 -nodes -newkey rsa:2048 -keyout ./certs/server.key -out ./certs/server.crt \
+            -subj "/CN=baidu.com" -days 3650 \
+            -addext "subjectAltName=DNS:baidu.com,IP:$ZT_IP" \
+            -addext "basicConstraints=critical,CA:FALSE"
+          
+          # 3. 部署 TUIC v5
+          TAG_TUIC=$(curl -s "https://api.github.com/repos/tuic-protocol/tuic/releases/latest" | jq -r ".tag_name")
+          curl -L -o tuic "https://github.com/tuic-protocol/tuic/releases/download/${TAG_TUIC}/${TAG_TUIC}-x86_64-unknown-linux-gnu"
+          chmod +x tuic
+          
+          # 核心优化：针对 227ms 高延迟，将窗口调大至 8MB (8388608) 以释放吞吐量
+          cat <<EOF > tuic.json
+          {
+            "server": "0.0.0.0:$TUIC_PORT",
+            "users": {
+              "$TUIC_UUID": "$PROXY_PASSWORD"
+            },
+            "certificate": "$(pwd)/certs/server.crt",
+            "private_key": "$(pwd)/certs/server.key",
+            "congestion_control": "bbr",
+            "alpn": ["h3"],
+            "send_window": 16777216,
+            "receive_window": 16777216,
+            "gc_interval": "10s",
+            "log_level": "info"
+          }
+          EOF
+          
+          echo "--- 生成的 TUIC 配置预览 ---"
+          cat tuic.json
+          echo "--------------------------"
+          
+          sudo ./tuic -c tuic.json > tuic.log 2>&1 &
+          
+          # 4. 部署 Hysteria2
+          TAG_HY2=$(curl -s "https://api.github.com/repos/apernet/hysteria/releases/latest" | jq -r ".tag_name")
+          curl -L -o hy2 "https://github.com/apernet/hysteria/releases/download/${TAG_HY2}/hysteria-linux-amd64"
+          chmod +x hy2
+          cat <<EOF > hy2.yaml
+          listen: :$HY2_PORT
+          tls:
+            cert: $(pwd)/certs/server.crt
+            key: $(pwd)/certs/server.key
+          auth:
+            type: password
+            password: $PROXY_PASSWORD
+          masquerade:
+            type: proxy
+            proxy:
+              url: https://www.baidu.com
+              rewriteHost: true
+          EOF
+          sudo ./hy2 server -c hy2.yaml > hy2.log 2>&1 &
+
+          # 5. 启动 iperf3 服务
+          iperf3 -s -D
+          
+          # 6. 开启 出口节点 转发与端口放行
+          sudo sysctl -w net.ipv4.ip_forward=1
+          sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+          sudo iptables -A INPUT -p udp --dport $TUIC_PORT -j ACCEPT
+          sudo iptables -A INPUT -p tcp --dport $TUIC_PORT -j ACCEPT
+          sudo iptables -A INPUT -p udp --dport $HY2_PORT -j ACCEPT
+          sudo iptables -A INPUT -p tcp --dport $HY2_PORT -j ACCEPT
+          sudo iptables -A INPUT -p tcp --dport 5201 -j ACCEPT
+          sudo iptables -A INPUT -p udp --dport 5201 -j ACCEPT
+
+          sleep 5
+          echo "--- 全系统监听状态报告 ---"
+          sudo netstat -tunlp
+          echo "------------------------"
+
+      - name: 导入监控脚本到 /root
+        run: |
+          sudo cp ./monitor.sh /root/monitor.sh
+          sudo chmod +x /root/monitor.sh
+          echo "✅ 监控脚本已导入到 /root/monitor.sh，可手动启动"
+
+      - name: 维持运行并输出信息
+        run: |
+          ZT_IP=$(sudo zerotier-cli listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
+          TUIC_LINK="tuic://${{ github.event.inputs.TUIC_UUID }}:${{ github.event.inputs.PROXY_PASSWORD }}@${ZT_IP}:${{ github.event.inputs.TUIC_PORT }}?insecure=1&alpn=h3&sni=baidu.com#A-TUIC5"
+          HY2_LINK="hy2://${{ github.event.inputs.PROXY_PASSWORD }}@${ZT_IP}:${{ github.event.inputs.HY2_PORT }}?insecure=1&sni=baidu.com#A-HY2"
+          
+          # [核心修复] 使用原生输入变量填充 JSON，避免环境变量未定义导致的值缺失
+          TUIC_JSON="{\"h\":\"$ZT_IP\",\"p\":${{ github.event.inputs.TUIC_PORT }},\"w\":\"${{ github.event.inputs.PROXY_PASSWORD }}\",\"u\":\"${{ github.event.inputs.TUIC_UUID }}\",\"d\":[\"1.1.1.1\",\"8.8.8.8\"]}"
+
+          # 2. 生成 PNG 记录到仓库根目录并推送
+          qrencode -o tuic_qr.png -s 10 "$TUIC_JSON"
+          qrencode -o hy2_qr.png -s 10 "$HY2_LINK"
+          
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          git add tuic_qr.png hy2_qr.png
+          git commit -m "自动更新二维码 (JSON协议预设) [skip ci]" || echo "没有变更"
+          git push
+
+          # 3. 准备 Summary 数据
+          echo "### 🚀 部署完成 (TUIC + Hysteria2)" >> $GITHUB_STEP_SUMMARY
+          echo "#### TUIC v5 (适配 Zerotier_Nexus 扫码)" >> $GITHUB_STEP_SUMMARY
+          echo "- **节点链接**: \`$TUIC_LINK\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **JSON 数据**: \`$TUIC_JSON\`" >> $GITHUB_STEP_SUMMARY
+          echo "#### Hysteria2" >> $GITHUB_STEP_SUMMARY
+          echo "- **链接**: \`$HY2_LINK\`" >> $GITHUB_STEP_SUMMARY
+
+          echo "=========================================="
+          echo "    A点部署完毕 (TUIC + HY2 + iperf3)    "
+          echo "=========================================="
+          echo "TUIC v5 (适配 Zerotier_Nexus 客户端导入):"
+          echo "文本链接 (手动复制): $TUIC_LINK"
+          echo "Hysteria2:"
+          echo "链接: $HY2_LINK"
+          echo "✅ 二维码图片已推送至仓库根目录: tuic_qr.png, hy2_qr.png"
+          echo "⚠️ 提示: 已针对 Zerotier_Nexus 优化二维码数据格式"
+          echo "=========================================="
+          
+          while true; do
+            echo "--- [$(date '+%H:%M:%S')] 健康检查脉冲 ---"
+            
+            # TUIC 检查
+            if ! pgrep -x "tuic" >/dev/null; then
+              echo "⚠️ TUIC 已停止，尝试重启..."
+              sudo ./tuic -c tuic.json > tuic.log 2>&1 &
+            else
+              echo "TUIC:     ✅ 正常"
+            fi
+            
+            # HY2 检查
+            if ! pgrep -x "hy2" >/dev/null; then
+              echo "⚠️ Hysteria2 已停止，尝试重启..."
+              sudo ./hy2 server -c hy2.yaml > hy2.log 2>&1 &
+            else
+              echo "HY2:      ✅ 正常"
+            fi
+            
+            # 调试日志输出
+            if [ -f "hy2.log" ]; then
+              echo "--- [HY2 实时日志摘要] ---"
+              tail -n 5 hy2.log
+            fi
+
+            # iperf3 检查
+            if ! pgrep -x "iperf3" >/dev/null; then
+              echo "⚠️ iperf3 已停止，尝试重启..."
+              iperf3 -s -D
+            else
+              echo "iperf3:   ✅ 正常"
+            fi
+            
+            sleep 600
+          done
