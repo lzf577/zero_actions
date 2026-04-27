@@ -1,4 +1,4 @@
-Name: Actions_TUIC_udp_NO2
+Name: Actions_TUIC_udp_NO2.yml
 
 on:
   workflow_dispatch:
