@@ -119,11 +119,12 @@ jobs:
 
       - name: ZeroTier 链路优化 (MTU 锁定)
         run: |
+          set -x
           # 强化逻辑：使用 ip link show 匹配 zt 开头的网卡名，更加健壮
           ZT_DEV=$(ip -o link show | grep "zt" | awk -F': ' '{print $2}' | cut -d'@' -f1 | head -n 1)
           if [ -n "$ZT_DEV" ]; then
             # 锁定 MTU 为 1280 解决公网传输中的分片导致的性能瓶颈
-            sudo ifconfig $ZT_DEV mtu 1280
+            sudo ip link set $ZT_DEV mtu 1280
             echo "✅ ZeroTier 接口 $ZT_DEV MTU 已锁定为 1280"
           else
             echo "⚠️ 警告: 未找到 ZeroTier 网卡，跳过 MTU 优化"
@@ -140,8 +141,12 @@ jobs:
           WG_PORT: ${{ github.event.inputs.WG_PORT }}
           HYSTERIA_BRUTAL_DEBUG: 1
         run: |
+          set -x
+          # 动态查找 ZeroTier
+          ZT_CLI=$(which zerotier-cli || echo "/usr/sbin/zerotier-cli")
+          
           # 强化逻辑：确保抓到的是 IPv4
-          ZT_IP=$(sudo /usr/sbin/zerotier-cli listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
+          ZT_IP=$(sudo $ZT_CLI listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
           
           if [[ ! $ZT_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "❌ 错误: 无法获取有效的 IPv4 地址 (当前抓取内容: $ZT_IP)"
