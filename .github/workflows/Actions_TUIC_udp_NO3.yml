@@ -141,7 +141,7 @@ jobs:
           HYSTERIA_BRUTAL_DEBUG: 1
         run: |
           # 强化逻辑：确保抓到的是 IPv4
-          ZT_IP=$(sudo zerotier-cli listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
+          ZT_IP=$(sudo /usr/sbin/zerotier-cli listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
           
           if [[ ! $ZT_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "❌ 错误: 无法获取有效的 IPv4 地址 (当前抓取内容: $ZT_IP)"
@@ -292,7 +292,7 @@ jobs:
 
       - name: 维持运行并输出信息
         run: |
-          ZT_IP=$(sudo zerotier-cli listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
+          ZT_IP=$(sudo /usr/sbin/zerotier-cli listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
           TUIC_LINK="tuic://${{ github.event.inputs.TUIC_UUID }}:${{ github.event.inputs.PROXY_PASSWORD }}@${ZT_IP}:${{ github.event.inputs.TUIC_PORT }}?insecure=1&alpn=h3&sni=baidu.com#A-TUIC5"
           HY2_LINK="hy2://${{ github.event.inputs.PROXY_PASSWORD }}@${ZT_IP}:${{ github.event.inputs.HY2_PORT }}?insecure=1&sni=baidu.com#A-HY2"
           SS_LINK="ss://$(echo -n "aes-256-gcm:${{ github.event.inputs.PROXY_PASSWORD }}" | base64 -w 0)@${ZT_IP}:${{ github.event.inputs.SS_PORT }}#A-SS-UDP"
@@ -338,66 +338,12 @@ jobs:
           echo "=========================================="
           
           while true; do
-            echo "--- [$(date '+%H:%M:%S')] 健康检查脉冲 ---"
-            
-            # TUIC 检查
-            if ! pgrep -x "tuic" >/dev/null; then
-              echo "⚠️ TUIC 已停止，尝试重启..."
-              sudo ./tuic -c tuic.json > tuic.log 2>&1 &
-            else
-              echo "TUIC:     ✅ 正常"
-            fi
-            
-            # HY2 检查
-            if ! pgrep -x "hy2" >/dev/null; then
-              echo "⚠️ Hysteria2 已停止，尝试重启..."
-              sudo ./hy2 server -c hy2.yaml > hy2.log 2>&1 &
-            else
-              echo "HY2:      ✅ 正常"
-            fi
-            
-            # 调试日志输出
-            if [ -f "hy2.log" ]; then
-              echo "--- [HY2 实时日志摘要] ---"
-              tail -n 5 hy2.log
-            fi
-
-            # SS 检查
-            if ! pgrep -x "ss2" >/dev/null; then
-              echo "⚠️ Shadowsocks 已停止，尝试重启..."
-              sudo ./ss2 -s "ss://AEAD_AES_256_GCM:$PROXY_PASSWORD@:$SS_PORT" -verbose > ss.log 2>&1 &
-            else
-              echo "SS:       ✅ 正常"
-            fi
-
-            # KCP 检查
-            if ! pgrep -f "server_linux_amd64" >/dev/null; then
-              echo "⚠️ Kcptun 已停止，尝试重启..."
-              sudo ./server_linux_amd64 -l ":$KCP_PORT" -t "127.0.0.1:22" --key "$PROXY_PASSWORD" --mode fast3 > kcp.log 2>&1 &
-            else
-              echo "KCP:      ✅ 正常"
-            fi
-
-            # WG 检查
-            if ! ip link show wg0 >/dev/null 2>&1; then
-              echo "⚠️ WireGuard 已停止，尝试重启..."
-              if [ -f "/usr/local/bin/wireguard-go" ]; then
-                sudo /usr/local/bin/wireguard-go wg0
-                sudo wg setconf wg0 wg0.conf
-                sudo ip address add 10.0.0.1/24 dev wg0
-                sudo ip link set up dev wg0
-              fi
-            else
-              echo "WG:       ✅ 正常"
-            fi
-
-            # iperf3 检查
-            if ! pgrep -x "iperf3" >/dev/null; then
-              echo "⚠️ iperf3 已停止，尝试重启..."
-              iperf3 -s -D
-            else
-              echo "iperf3:   ✅ 正常"
-            fi
-            
+            echo "--- [$(date '+%H:%M:%S')] 健康检查 ---"
+            pgrep -x "tuic" >/dev/null || ( [[ -f "./tuic" ]] && sudo ./tuic -c tuic.json > tuic.log 2>&1 & )
+            pgrep -x "hy2" >/dev/null || ( [[ -f "./hy2" ]] && sudo ./hy2 server -c hy2.yaml > hy2.log 2>&1 & )
+            pgrep -x "ss2" >/dev/null || ( [[ -f "./ss2" ]] && sudo ./ss2 -s "ss://AEAD_AES_256_GCM:$PROXY_PASSWORD@:$SS_PORT" -verbose > ss.log 2>&1 & )
+            pgrep -f "server_linux_amd64" >/dev/null || ( [[ -f "./server_linux_amd64" ]] && sudo ./server_linux_amd64 -l ":$KCP_PORT" -t "127.0.0.1:22" --key "$PROXY_PASSWORD" --mode fast3 > kcp.log 2>&1 & )
+            ip link show wg0 >/dev/null 2>&1 || ( [[ -f "/usr/local/bin/wireguard-go" ]] && sudo /usr/local/bin/wireguard-go wg0 && sudo wg setconf wg0 wg0.conf && sudo ip address add 10.0.0.1/24 dev wg0 && sudo ip link set up dev wg0 )
+            pgrep -x "iperf3" >/dev/null || iperf3 -s -D
             sleep 600
           done
