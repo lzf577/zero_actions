@@ -286,19 +286,32 @@ jobs:
 
       - name: 导入监控脚本到 /root
         run: |
+          set -x
           sudo cp ./monitor.sh /root/monitor.sh
           sudo chmod +x /root/monitor.sh
           echo "✅ 监控脚本已导入到 /root/monitor.sh，可手动启动"
 
-      - name: 维持运行并输出信息
+      - name: 维持运行并输出信息 (全方位调试模式)
+        env:
+          PROXY_PASSWORD: ${{ github.event.inputs.PROXY_PASSWORD }}
+          TUIC_PORT: ${{ github.event.inputs.TUIC_PORT }}
+          TUIC_UUID: ${{ github.event.inputs.TUIC_UUID }}
+          HY2_PORT: ${{ github.event.inputs.HY2_PORT }}
+          KCP_PORT: ${{ github.event.inputs.KCP_PORT }}
+          SS_PORT: ${{ github.event.inputs.SS_PORT }}
+          WG_PORT: ${{ github.event.inputs.WG_PORT }}
         run: |
-          ZT_IP=$(sudo /usr/sbin/zerotier-cli listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
+          set -x # 开启调试输出，显示每一条执行的命令
+          
+          # 动态查找 ZeroTier 路径
+          ZT_CLI=$(which zerotier-cli || echo "/usr/sbin/zerotier-cli")
+          IP_CMD=$(which ip || echo "/usr/sbin/ip")
+          
+          ZT_IP=$(sudo $ZT_CLI listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
+          
           TUIC_LINK="tuic://${{ github.event.inputs.TUIC_UUID }}:${{ github.event.inputs.PROXY_PASSWORD }}@${ZT_IP}:${{ github.event.inputs.TUIC_PORT }}?insecure=1&alpn=h3&sni=baidu.com#A-TUIC5"
           HY2_LINK="hy2://${{ github.event.inputs.PROXY_PASSWORD }}@${ZT_IP}:${{ github.event.inputs.HY2_PORT }}?insecure=1&sni=baidu.com#A-HY2"
           SS_LINK="ss://$(echo -n "aes-256-gcm:${{ github.event.inputs.PROXY_PASSWORD }}" | base64 -w 0)@${ZT_IP}:${{ github.event.inputs.SS_PORT }}#A-SS-UDP"
-          KCP_INFO="地址: $ZT_IP, 端口: ${{ github.event.inputs.KCP_PORT }}, 密码: ${{ github.event.inputs.PROXY_PASSWORD }}, 模式: fast3 (映射到 SSH 22)"
-          WG_PUB=$(cat wg_pub.key)
-          WG_INFO="地址: $ZT_IP, 端口: ${{ github.event.inputs.WG_PORT }}, 公钥: $WG_PUB, 内网IP: 10.0.0.1"
           
           # [核心修复] 使用原生输入变量填充 JSON
           TUIC_JSON="{\"h\":\"$ZT_IP\",\"p\":${{ github.event.inputs.TUIC_PORT }},\"w\":\"${{ github.event.inputs.PROXY_PASSWORD }}\",\"u\":\"${{ github.event.inputs.TUIC_UUID }}\",\"d\":[\"1.1.1.1\",\"8.8.8.8\"]}"
@@ -322,24 +335,9 @@ jobs:
           echo "- **链接**: \`$HY2_LINK\`" >> $GITHUB_STEP_SUMMARY
           echo "#### 3. Shadowsocks-UDP" >> $GITHUB_STEP_SUMMARY
           echo "- **链接**: \`$SS_LINK\`" >> $GITHUB_STEP_SUMMARY
-          echo "#### 4. KCP (Kcptun)" >> $GITHUB_STEP_SUMMARY
-          echo "- **信息**: $KCP_INFO" >> $GITHUB_STEP_SUMMARY
-          echo "#### 5. WireGuard (Userspace)" >> $GITHUB_STEP_SUMMARY
-          echo "- **信息**: $WG_INFO" >> $GITHUB_STEP_SUMMARY
-
-          echo "=========================================="
-          echo "    全协议 UDP 矩阵部署完毕 (TUIC/HY2/SS/KCP/WG)    "
-          echo "=========================================="
-          echo "TUIC: $TUIC_LINK"
-          echo "HY2:  $HY2_LINK"
-          echo "SS:   $SS_LINK"
-          echo "KCP:  $KCP_INFO"
-          echo "WG:   $WG_INFO"
-          echo "=========================================="
           
           while true; do
             echo "--- [$(date '+%H:%M:%S')] 健康检查 ---"
-            pgrep -x "tuic" >/dev/null || ( [[ -f "./tuic" ]] && sudo ./tuic -c tuic.json > tuic.log 2>&1 & )
             pgrep -x "hy2" >/dev/null || ( [[ -f "./hy2" ]] && sudo ./hy2 server -c hy2.yaml > hy2.log 2>&1 & )
             pgrep -x "ss2" >/dev/null || ( [[ -f "./ss2" ]] && sudo ./ss2 -s "ss://AEAD_AES_256_GCM:$PROXY_PASSWORD@:$SS_PORT" -verbose > ss.log 2>&1 & )
             pgrep -f "server_linux_amd64" >/dev/null || ( [[ -f "./server_linux_amd64" ]] && sudo ./server_linux_amd64 -l ":$KCP_PORT" -t "127.0.0.1:22" --key "$PROXY_PASSWORD" --mode fast3 > kcp.log 2>&1 & )
