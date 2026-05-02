@@ -49,8 +49,18 @@ jobs:
 
       - name: 安装基础工具
         run: |
-          sudo apt-get update
+          set -e
+          for i in {1..3}; do
+            sudo apt-get update && break || sleep 10
+          done
           sudo apt-get install -y curl wget ifstat btop iperf3 jq openssl net-tools qrencode wireguard-tools resolvconf procps iproute2
+          # 验证关键工具是否安装成功
+          for tool in curl jq openssl qrencode wg; do
+            if ! command -v $tool &> /dev/null; then
+              echo "❌ 错误: 关键工具 $tool 未安装成功"
+              exit 1
+            fi
+          done
 
       - name: 安装并配置 ZeroTier
         run: |
@@ -175,7 +185,10 @@ jobs:
           # 3. 部署 TUIC v5
           TAG_TUIC=$(curl -s "https://api.github.com/repos/tuic-protocol/tuic/releases/latest" | jq -r ".tag_name")
           if [ -z "$TAG_TUIC" ] || [ "$TAG_TUIC" == "null" ]; then TAG_TUIC="v5.0.0"; fi
-          curl -L -o tuic "https://github.com/tuic-protocol/tuic/releases/download/${TAG_TUIC}/${TAG_TUIC}-x86_64-unknown-linux-gnu"
+          TUIC_URL="https://github.com/tuic-protocol/tuic/releases/download/${TAG_TUIC}/${TAG_TUIC}-x86_64-unknown-linux-gnu"
+          echo "正在从 $TUIC_URL 下载 TUIC..."
+          curl -L -o tuic "$TUIC_URL"
+          if [ ! -s "./tuic" ]; then echo "❌ 错误: TUIC 下载失败或文件为空"; exit 1; fi
           chmod +x tuic
           
           # 核心优化：针对 227ms 高延迟，将窗口调大至 8MB (8388608) 以释放吞吐量
@@ -200,16 +213,15 @@ jobs:
           cat tuic.json
           echo "--------------------------"
           
-          if [ -f "./tuic" ]; then
-            sudo ./tuic -c tuic.json > tuic.log 2>&1 &
-          else
-            echo "❌ 错误: tuic 二进制文件不存在"
-          fi
+          sudo ./tuic -c tuic.json > tuic.log 2>&1 &
           
           # 4. 部署 Hysteria2
           TAG_HY2=$(curl -s "https://api.github.com/repos/apernet/hysteria/releases/latest" | jq -r ".tag_name")
           if [ -z "$TAG_HY2" ] || [ "$TAG_HY2" == "null" ]; then TAG_HY2="v2.5.2"; fi
-          curl -L -o hy2 "https://github.com/apernet/hysteria/releases/download/${TAG_HY2}/hysteria-linux-amd64"
+          HY2_URL="https://github.com/apernet/hysteria/releases/download/${TAG_HY2}/hysteria-linux-amd64"
+          echo "正在从 $HY2_URL 下载 Hysteria2..."
+          curl -L -o hy2 "$HY2_URL"
+          if [ ! -s "./hy2" ]; then echo "❌ 错误: Hysteria2 下载失败或文件为空"; exit 1; fi
           chmod +x hy2
           cat <<EOF > hy2.yaml
           listen: :$HY2_PORT
@@ -225,59 +237,56 @@ jobs:
               url: https://www.baidu.com
               rewriteHost: true
           EOF
-          if [ -f "./hy2" ]; then
-            sudo ./hy2 server -c hy2.yaml > hy2.log 2>&1 &
-          else
-            echo "❌ 错误: hy2 二进制文件不存在"
-          fi
+          sudo ./hy2 server -c hy2.yaml > hy2.log 2>&1 &
 
           # 5. 部署 KCP (Kcptun) - 映射到本地 SSH 22
           TAG_KCP=$(curl -s "https://api.github.com/repos/xtaci/kcptun/releases/latest" | jq -r ".tag_name")
           if [ -z "$TAG_KCP" ] || [ "$TAG_KCP" == "null" ]; then TAG_KCP="v20240401"; fi
           KCP_URL="https://github.com/xtaci/kcptun/releases/download/${TAG_KCP}/kcptun-linux-amd64-${TAG_KCP#v}.tar.gz"
+          echo "正在从 $KCP_URL 下载 Kcptun..."
           curl -L -o kcptun.tar.gz "$KCP_URL"
-          tar -zxf kcptun.tar.gz server_linux_amd64 || echo "Tar extraction failed, but continuing..."
-          chmod +x server_linux_amd64 || true
-          if [ -f "./server_linux_amd64" ]; then
-            sudo ./server_linux_amd64 -l ":$KCP_PORT" -t "127.0.0.1:22" --key "$PROXY_PASSWORD" --mode fast3 > kcp.log 2>&1 &
-          else
-            echo "❌ 错误: Kcptun 二进制文件不存在"
-          fi
+          if [ ! -s "kcptun.tar.gz" ]; then echo "❌ 错误: Kcptun 下载失败"; exit 1; fi
+          tar -zxf kcptun.tar.gz server_linux_amd64 || { echo "❌ Tar 解压失败"; exit 1; }
+          chmod +x server_linux_amd64
+          sudo ./server_linux_amd64 -l ":$KCP_PORT" -t "127.0.0.1:22" --key "$PROXY_PASSWORD" --mode fast3 > kcp.log 2>&1 &
 
           # 6. 部署 Shadowsocks-UDP
-          curl -L -o ss2 "https://github.com/shadowsocks/go-shadowsocks2/releases/download/v0.1.5/go-shadowsocks2-linux-amd64"
+          SS2_URL="https://github.com/shadowsocks/go-shadowsocks2/releases/download/v0.1.5/go-shadowsocks2-linux-amd64"
+          echo "正在下载 Shadowsocks-UDP..."
+          curl -L -o ss2 "$SS2_URL"
+          if [ ! -s "./ss2" ]; then echo "❌ 错误: Shadowsocks 下载失败"; exit 1; fi
           chmod +x ss2
-          if [ -f "./ss2" ]; then
-            sudo ./ss2 -s "ss://AEAD_AES_256_GCM:$PROXY_PASSWORD@:$SS_PORT" -verbose > ss.log 2>&1 &
-          else
-            echo "❌ 错误: Shadowsocks 二进制文件不存在"
-          fi
+          sudo ./ss2 -s "ss://AEAD_AES_256_GCM:$PROXY_PASSWORD@:$SS_PORT" -verbose > ss.log 2>&1 &
 
           # 7. 部署 WireGuard (wireguard-go 用户态)
-          curl -L -o wg-go https://github.com/P3TERX/wireguard-go-builder/releases/download/0.0.20230223/wireguard-go-linux-amd64
+          WG_GO_URL="https://github.com/P3TERX/wireguard-go-builder/releases/download/0.0.20230223/wireguard-go-linux-amd64"
+          echo "正在下载 wireguard-go..."
+          curl -L -o wg-go "$WG_GO_URL"
+          if [ ! -s "./wg-go" ]; then echo "❌ 错误: wireguard-go 下载失败"; exit 1; fi
           chmod +x wg-go
           sudo mv wg-go /usr/local/bin/wireguard-go
-          WG_PRIV=$(wg genkey)
-          WG_PUB=$(echo "$WG_PRIV" | wg pubkey)
-          echo "$WG_PRIV" > wg_priv.key
-          echo "$WG_PUB" > wg_pub.key
-          cat <<EOF > wg0.conf
+          
+          if command -v wg > /dev/null; then
+            WG_PRIV=$(wg genkey)
+            WG_PUB=$(echo "$WG_PRIV" | wg pubkey)
+            echo "$WG_PRIV" > wg_priv.key
+            echo "$WG_PUB" > wg_pub.key
+            cat <<EOF > wg0.conf
           [Interface]
           PrivateKey = $WG_PRIV
           Address = 10.0.0.1/24
           ListenPort = $WG_PORT
           EOF
-          if [ -f "/usr/local/bin/wireguard-go" ]; then
             sudo /usr/local/bin/wireguard-go wg0 || true
             sudo wg setconf wg0 wg0.conf || true
             sudo ip address add 10.0.0.1/24 dev wg0 || true
             sudo ip link set up dev wg0 || true
           else
-            echo "❌ 错误: wireguard-go 二进制文件不存在"
+            echo "⚠️ 警告: 未找到 wg 工具，跳过 WireGuard 配置"
           fi
 
           # 8. 启动 iperf3 服务
-          iperf3 -s -D
+          iperf3 -s -D || echo "⚠️ iperf3 启动失败"
           
           # 9. 开启 出口节点 转发与端口放行
           sudo sysctl -w net.ipv4.ip_forward=1
@@ -330,13 +339,17 @@ jobs:
           TUIC_JSON="{\"h\":\"$ZT_IP\",\"p\":${{ github.event.inputs.TUIC_PORT }},\"w\":\"${{ github.event.inputs.PROXY_PASSWORD }}\",\"u\":\"${{ github.event.inputs.TUIC_UUID }}\",\"d\":[\"1.1.1.1\",\"8.8.8.8\"]}"
 
           # 2. 生成 PNG 记录到仓库根目录并推送
-          qrencode -o tuic_qr.png -s 10 "$TUIC_JSON"
-          qrencode -o hy2_qr.png -s 10 "$HY2_LINK"
-          qrencode -o ss_qr.png -s 10 "$SS_LINK"
+          if command -v qrencode > /dev/null; then
+            qrencode -o tuic_qr.png -s 10 "$TUIC_JSON"
+            qrencode -o hy2_qr.png -s 10 "$HY2_LINK"
+            qrencode -o ss_qr.png -s 10 "$SS_LINK"
+          else
+            echo "⚠️ 警告: 未找到 qrencode，跳过二维码生成"
+          fi
           
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          git add tuic_qr.png hy2_qr.png ss_qr.png
+          git add *.png || echo "没有图片可添加"
           git commit -m "自动更新二维码 (多协议) [skip ci]" || echo "没有变更"
           git push || echo "Git push failed, but continuing..."
 
