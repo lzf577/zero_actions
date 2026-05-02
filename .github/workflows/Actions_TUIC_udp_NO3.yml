@@ -71,14 +71,20 @@ jobs:
           
           sudo systemctl start zerotier-one
           sleep 5
+          if ! command -v zerotier-cli >/dev/null 2>&1 && [ ! -f "/usr/sbin/zerotier-cli" ]; then
+            echo "❌ ZeroTier 安装似乎失败了"
+            exit 1
+          fi
 
       - name: 加入 ZeroTier 网络
         run: |
-          sudo zerotier-cli join ${{ github.event.inputs.ZT_NETWORK_ID }}
+          set -x
+          ZT_CLI=$(which zerotier-cli || echo "/usr/sbin/zerotier-cli")
+          sudo $ZT_CLI join ${{ github.event.inputs.ZT_NETWORK_ID }}
           echo "等待 ZeroTier 分配局域网 IP..."
           for i in {1..20}; do
             # 强化逻辑：抓取最后一列，通过 tr 分隔多地址，grep 排除 IPv6(冒号)，只取第一个 IPv4
-            ZT_IP=$(sudo zerotier-cli listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
+            ZT_IP=$(sudo $ZT_CLI listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
             if [[ $ZT_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
               echo "✅ 已分配到内网 IPv4: $ZT_IP"
               break
@@ -88,6 +94,7 @@ jobs:
 
       - name: 配置并开启 SSH 服务
         run: |
+          set -x
           sudo apt-get install -y openssh-server
           echo "runner:kkk" | sudo chpasswd
           echo "root:kkk" | sudo chpasswd
@@ -99,6 +106,7 @@ jobs:
 
       - name: 网络环境优化 (极速模式)
         run: |
+          set -x
           # 1. 调大内核 UDP 缓冲区 (解决 TUIC/QUIC 高速下的丢包问题)
           sudo sysctl -w net.core.rmem_max=33554432
           sudo sysctl -w net.core.wmem_max=33554432
