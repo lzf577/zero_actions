@@ -235,10 +235,22 @@ jobs:
           sudo ./hy2 server -c hy2.yaml > hy2.log 2>&1 &
 
           # 5. 部署 Shadowsocks-UDP
-          SS2_URL="https://github.com/shadowsocks/go-shadowsocks2/releases/download/v0.1.5/go-shadowsocks2-linux-amd64"
+          SS2_URL="https://github.com/shadowsocks/go-shadowsocks2/releases/download/v0.1.5/shadowsocks2-linux.gz"
           echo "正在下载 Shadowsocks-UDP..."
-          curl -L -o ss2 "$SS2_URL"
-          if [ ! -s "./ss2" ] || ! file ss2 | grep -q "ELF"; then echo "❌ 错误: Shadowsocks 下载失败或文件格式不正确"; exit 1; fi
+          curl -L -o ss2.gz "$SS2_URL"
+          
+          if [ ! -s "ss2.gz" ] || ! file ss2.gz | grep -q "gzip"; then
+            echo "⚠️ .gz 下载失败，尝试 bare binary..."
+            curl -L -o ss2 "https://github.com/shadowsocks/go-shadowsocks2/releases/download/v0.1.5/go-shadowsocks2-linux-amd64"
+          else
+            gzip -d ss2.gz
+            mv ss2-linux ss2 2>/dev/null || mv shadowsocks2-linux ss2 2>/dev/null || true
+          fi
+
+          if [ ! -s "./ss2" ] || ! file ss2 | grep -q "ELF"; then
+            echo "❌ 错误: Shadowsocks 最终获取失败"
+            exit 1
+          fi
           chmod +x ss2
           sudo ./ss2 -s "ss://AEAD_AES_256_GCM:$PROXY_PASSWORD@:$SS_PORT" -verbose > ss.log 2>&1 &
 
