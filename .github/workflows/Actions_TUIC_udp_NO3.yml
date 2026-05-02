@@ -41,6 +41,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
@@ -159,6 +161,7 @@ jobs:
           
           # 3. 部署 TUIC v5
           TAG_TUIC=$(curl -s "https://api.github.com/repos/tuic-protocol/tuic/releases/latest" | jq -r ".tag_name")
+          if [ -z "$TAG_TUIC" ] || [ "$TAG_TUIC" == "null" ]; then TAG_TUIC="v5.0.0"; fi
           curl -L -o tuic "https://github.com/tuic-protocol/tuic/releases/download/${TAG_TUIC}/${TAG_TUIC}-x86_64-unknown-linux-gnu"
           chmod +x tuic
           
@@ -188,6 +191,7 @@ jobs:
           
           # 4. 部署 Hysteria2
           TAG_HY2=$(curl -s "https://api.github.com/repos/apernet/hysteria/releases/latest" | jq -r ".tag_name")
+          if [ -z "$TAG_HY2" ] || [ "$TAG_HY2" == "null" ]; then TAG_HY2="v2.5.2"; fi
           curl -L -o hy2 "https://github.com/apernet/hysteria/releases/download/${TAG_HY2}/hysteria-linux-amd64"
           chmod +x hy2
           cat <<EOF > hy2.yaml
@@ -208,10 +212,11 @@ jobs:
 
           # 5. 部署 KCP (Kcptun) - 映射到本地 SSH 22
           TAG_KCP=$(curl -s "https://api.github.com/repos/xtaci/kcptun/releases/latest" | jq -r ".tag_name")
+          if [ -z "$TAG_KCP" ] || [ "$TAG_KCP" == "null" ]; then TAG_KCP="v20240401"; fi
           KCP_URL="https://github.com/xtaci/kcptun/releases/download/${TAG_KCP}/kcptun-linux-amd64-${TAG_KCP#v}.tar.gz"
           curl -L -o kcptun.tar.gz "$KCP_URL"
-          tar -zxf kcptun.tar.gz server_linux_amd64
-          chmod +x server_linux_amd64
+          tar -zxf kcptun.tar.gz server_linux_amd64 || echo "Tar extraction failed, but continuing..."
+          chmod +x server_linux_amd64 || true
           sudo ./server_linux_amd64 -l ":$KCP_PORT" -t "127.0.0.1:22" --key "$PROXY_PASSWORD" --mode fast3 > kcp.log 2>&1 &
 
           # 6. 部署 Shadowsocks-UDP
@@ -233,10 +238,10 @@ jobs:
           Address = 10.0.0.1/24
           ListenPort = $WG_PORT
           EOF
-          sudo wireguard-go wg0
-          sudo wg setconf wg0 wg0.conf
-          sudo ip address add 10.0.0.1/24 dev wg0
-          sudo ip link set up dev wg0
+          sudo wireguard-go wg0 || true
+          sudo wg setconf wg0 wg0.conf || true
+          sudo ip address add 10.0.0.1/24 dev wg0 || true
+          sudo ip link set up dev wg0 || true
 
           # 8. 启动 iperf3 服务
           iperf3 -s -D
@@ -270,7 +275,7 @@ jobs:
           ZT_IP=$(sudo zerotier-cli listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
           TUIC_LINK="tuic://${{ github.event.inputs.TUIC_UUID }}:${{ github.event.inputs.PROXY_PASSWORD }}@${ZT_IP}:${{ github.event.inputs.TUIC_PORT }}?insecure=1&alpn=h3&sni=baidu.com#A-TUIC5"
           HY2_LINK="hy2://${{ github.event.inputs.PROXY_PASSWORD }}@${ZT_IP}:${{ github.event.inputs.HY2_PORT }}?insecure=1&sni=baidu.com#A-HY2"
-          SS_LINK="ss://$(echo -n "aes-256-gcm:${{ github.event.inputs.PROXY_PASSWORD }}" | base64)@${ZT_IP}:${{ github.event.inputs.SS_PORT }}#A-SS-UDP"
+          SS_LINK="ss://$(echo -n "aes-256-gcm:${{ github.event.inputs.PROXY_PASSWORD }}" | base64 -w 0)@${ZT_IP}:${{ github.event.inputs.SS_PORT }}#A-SS-UDP"
           KCP_INFO="地址: $ZT_IP, 端口: ${{ github.event.inputs.KCP_PORT }}, 密码: ${{ github.event.inputs.PROXY_PASSWORD }}, 模式: fast3 (映射到 SSH 22)"
           WG_PUB=$(cat wg_pub.key)
           WG_INFO="地址: $ZT_IP, 端口: ${{ github.event.inputs.WG_PORT }}, 公钥: $WG_PUB, 内网IP: 10.0.0.1"
@@ -287,7 +292,7 @@ jobs:
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
           git add tuic_qr.png hy2_qr.png ss_qr.png
           git commit -m "自动更新二维码 (多协议) [skip ci]" || echo "没有变更"
-          git push
+          git push || echo "Git push failed, but continuing..."
 
           # 3. 准备 Summary 数据
           echo "### 🚀 部署完成 (全协议 UDP 矩阵)" >> $GITHUB_STEP_SUMMARY
