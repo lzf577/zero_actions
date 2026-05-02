@@ -172,10 +172,9 @@ jobs:
           TUIC_URL="https://github.com/tuic-protocol/tuic/releases/download/${TAG_TUIC}/${TAG_TUIC}-x86_64-unknown-linux-gnu"
           echo "正在从 $TUIC_URL 下载 TUIC..."
           curl -L -o tuic "$TUIC_URL"
-          if [ ! -s "./tuic" ] || ! file tuic | grep -q "ELF"; then echo "❌ 错误: TUIC 下载失败或文件格式不正确"; exit 1; fi
+          if [ ! -s "./tuic" ] || ! file tuic | grep -q "ELF"; then echo "❌ 错误: TUIC 下载失败"; exit 1; fi
           chmod +x tuic
           
-          # 核心优化：针对 227ms 高延迟，将窗口调大至 8MB (8388608) 以释放吞吐量
           cat <<EOF > tuic.json
           {
             "server": "0.0.0.0:$TUIC_PORT",
@@ -193,12 +192,22 @@ jobs:
           }
           EOF
           
-          echo "--- 生成的 TUIC 配置预览 ---"
-          cat tuic.json
-          echo "--------------------------"
-          
           sudo ./tuic -c tuic.json > tuic.log 2>&1 &
           
+          # 5. 部署 Shadowsocks-UDP (鲁棒修复版)
+          echo "正在下载 Shadowsocks-UDP..."
+          wget -O ss2.gz https://github.com/shadowsocks/go-shadowsocks2/releases/download/v0.1.5/shadowsocks2-linux.gz
+          gzip -d -c ss2.gz > ss2
+          if [ ! -s "./ss2" ]; then
+             echo "⚠️ .gz 解压失败，尝试直接下载二进制..."
+             curl -L -o ss2 https://github.com/shadowsocks/go-shadowsocks2/releases/download/v0.1.5/go-shadowsocks2-linux-amd64
+          fi
+          
+          if [ ! -s "./ss2" ] || ! file ss2 | grep -q "ELF"; then
+            echo "❌ 错误: Shadowsocks 二进制获取失败"
+            exit 1
+          fi
+          chmod +x ss2
           sudo ./ss2 -s "ss://AEAD_AES_256_GCM:$PROXY_PASSWORD@:$SS_PORT" -verbose > ss.log 2>&1 &
 
           # 8. 启动 iperf3 服务
