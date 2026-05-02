@@ -23,10 +23,6 @@ on:
         description: 'Hysteria2 监听端口'
         required: true
         default: '10005'
-      KCP_PORT:
-        description: 'KCP (Kcptun) 监听端口'
-        required: true
-        default: '10006'
       WG_PORT:
         description: 'WireGuard 监听端口'
         required: true
@@ -154,7 +150,6 @@ jobs:
           TUIC_PORT: ${{ github.event.inputs.TUIC_PORT }}
           TUIC_UUID: ${{ github.event.inputs.TUIC_UUID }}
           HY2_PORT: ${{ github.event.inputs.HY2_PORT }}
-          KCP_PORT: ${{ github.event.inputs.KCP_PORT }}
           SS_PORT: ${{ github.event.inputs.SS_PORT }}
           WG_PORT: ${{ github.event.inputs.WG_PORT }}
           HYSTERIA_BRUTAL_DEBUG: 1
@@ -183,7 +178,7 @@ jobs:
             -addext "basicConstraints=critical,CA:FALSE"
           
           # 3. 部署 TUIC v5
-          TAG_TUIC=$(curl -s "https://api.github.com/repos/tuic-protocol/tuic/releases/latest" | jq -r ".tag_name")
+          TAG_TUIC=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/tuic-protocol/tuic/releases/latest" | jq -r ".tag_name")
           if [ -z "$TAG_TUIC" ] || [ "$TAG_TUIC" == "null" ]; then TAG_TUIC="v5.0.0"; fi
           TUIC_URL="https://github.com/tuic-protocol/tuic/releases/download/${TAG_TUIC}/${TAG_TUIC}-x86_64-unknown-linux-gnu"
           echo "正在从 $TUIC_URL 下载 TUIC..."
@@ -216,7 +211,7 @@ jobs:
           sudo ./tuic -c tuic.json > tuic.log 2>&1 &
           
           # 4. 部署 Hysteria2
-          TAG_HY2=$(curl -s "https://api.github.com/repos/apernet/hysteria/releases/latest" | jq -r ".tag_name")
+          TAG_HY2=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/apernet/hysteria/releases/latest" | jq -r ".tag_name")
           if [ -z "$TAG_HY2" ] || [ "$TAG_HY2" == "null" ]; then TAG_HY2="v2.5.2"; fi
           HY2_URL="https://github.com/apernet/hysteria/releases/download/${TAG_HY2}/hysteria-linux-amd64"
           echo "正在从 $HY2_URL 下载 Hysteria2..."
@@ -239,31 +234,7 @@ jobs:
           EOF
           sudo ./hy2 server -c hy2.yaml > hy2.log 2>&1 &
 
-          # 5. 部署 KCP (Kcptun) - 映射到本地 SSH 22
-          echo "正在获取 Kcptun 下载链接..."
-          KCP_JSON=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/xtaci/kcptun/releases/latest")
-          KCP_URL=$(echo "$KCP_JSON" | jq -r '.assets[] | select(.name | contains("linux-amd64")) | .browser_download_url' | head -n 1)
-          
-          if [ -z "$KCP_URL" ] || [ "$KCP_URL" == "null" ]; then
-            echo "⚠️ 无法通过 API 获取链接，使用备用固定链接..."
-            KCP_URL="https://github.com/xtaci/kcptun/releases/download/v20240401/kcptun-linux-amd64-20240401.tar.gz"
-          fi
-          
-          echo "正在从 $KCP_URL 下载 Kcptun..."
-          curl -L -o kcptun.tar.gz "$KCP_URL"
-          if [ ! -s "kcptun.tar.gz" ]; then echo "❌ 错误: Kcptun 下载失败"; exit 1; fi
-          
-          # 自动识别压缩包内的二进制文件名
-          tar -ztf kcptun.tar.gz > kcp_files.txt
-          KCP_BIN=$(grep "server_linux_amd64" kcp_files.txt | head -n 1)
-          if [ -z "$KCP_BIN" ]; then KCP_BIN="server_linux_amd64"; fi
-          
-          tar -zxf kcptun.tar.gz "$KCP_BIN" || { echo "❌ Tar 解压失败"; exit 1; }
-          mv "$KCP_BIN" server_linux_amd64 2>/dev/null || true
-          chmod +x server_linux_amd64
-          sudo ./server_linux_amd64 -l ":$KCP_PORT" -t "127.0.0.1:22" --key "$PROXY_PASSWORD" --mode fast3 > kcp.log 2>&1 &
-
-          # 6. 部署 Shadowsocks-UDP
+          # 5. 部署 Shadowsocks-UDP
           SS2_URL="https://github.com/shadowsocks/go-shadowsocks2/releases/download/v0.1.5/go-shadowsocks2-linux-amd64"
           echo "正在下载 Shadowsocks-UDP..."
           curl -L -o ss2 "$SS2_URL"
@@ -308,7 +279,6 @@ jobs:
           sudo iptables -A INPUT -p tcp --dport $TUIC_PORT -j ACCEPT
           sudo iptables -A INPUT -p udp --dport $HY2_PORT -j ACCEPT
           sudo iptables -A INPUT -p tcp --dport $HY2_PORT -j ACCEPT
-          sudo iptables -A INPUT -p udp --dport $KCP_PORT -j ACCEPT
           sudo iptables -A INPUT -p udp --dport $SS_PORT -j ACCEPT
           sudo iptables -A INPUT -p udp --dport $WG_PORT -j ACCEPT
           sudo iptables -A INPUT -p tcp --dport 5201 -j ACCEPT
@@ -332,7 +302,6 @@ jobs:
           TUIC_PORT: ${{ github.event.inputs.TUIC_PORT }}
           TUIC_UUID: ${{ github.event.inputs.TUIC_UUID }}
           HY2_PORT: ${{ github.event.inputs.HY2_PORT }}
-          KCP_PORT: ${{ github.event.inputs.KCP_PORT }}
           SS_PORT: ${{ github.event.inputs.SS_PORT }}
           WG_PORT: ${{ github.event.inputs.WG_PORT }}
         run: |
@@ -379,7 +348,6 @@ jobs:
             echo "--- [$(date '+%H:%M:%S')] 健康检查 ---"
             pgrep -x "hy2" >/dev/null || ( [[ -f "./hy2" ]] && sudo ./hy2 server -c hy2.yaml > hy2.log 2>&1 & )
             pgrep -x "ss2" >/dev/null || ( [[ -f "./ss2" ]] && sudo ./ss2 -s "ss://AEAD_AES_256_GCM:$PROXY_PASSWORD@:$SS_PORT" -verbose > ss.log 2>&1 & )
-            pgrep -f "server_linux_amd64" >/dev/null || ( [[ -f "./server_linux_amd64" ]] && sudo ./server_linux_amd64 -l ":$KCP_PORT" -t "127.0.0.1:22" --key "$PROXY_PASSWORD" --mode fast3 > kcp.log 2>&1 & )
             ip link show wg0 >/dev/null 2>&1 || ( [[ -f "/usr/local/bin/wireguard-go" ]] && sudo /usr/local/bin/wireguard-go wg0 && sudo wg setconf wg0 wg0.conf && sudo ip address add 10.0.0.1/24 dev wg0 && sudo ip link set up dev wg0 )
             pgrep -x "iperf3" >/dev/null || iperf3 -s -D
             sleep 600
