@@ -240,13 +240,26 @@ jobs:
           sudo ./hy2 server -c hy2.yaml > hy2.log 2>&1 &
 
           # 5. 部署 KCP (Kcptun) - 映射到本地 SSH 22
-          TAG_KCP=$(curl -s "https://api.github.com/repos/xtaci/kcptun/releases/latest" | jq -r ".tag_name")
-          if [ -z "$TAG_KCP" ] || [ "$TAG_KCP" == "null" ]; then TAG_KCP="v20240401"; fi
-          KCP_URL="https://github.com/xtaci/kcptun/releases/download/${TAG_KCP}/kcptun-linux-amd64-${TAG_KCP#v}.tar.gz"
+          echo "正在获取 Kcptun 下载链接..."
+          KCP_JSON=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/xtaci/kcptun/releases/latest")
+          KCP_URL=$(echo "$KCP_JSON" | jq -r '.assets[] | select(.name | contains("linux-amd64")) | .browser_download_url' | head -n 1)
+          
+          if [ -z "$KCP_URL" ] || [ "$KCP_URL" == "null" ]; then
+            echo "⚠️ 无法通过 API 获取链接，使用备用固定链接..."
+            KCP_URL="https://github.com/xtaci/kcptun/releases/download/v20240401/kcptun-linux-amd64-20240401.tar.gz"
+          fi
+          
           echo "正在从 $KCP_URL 下载 Kcptun..."
           curl -L -o kcptun.tar.gz "$KCP_URL"
           if [ ! -s "kcptun.tar.gz" ]; then echo "❌ 错误: Kcptun 下载失败"; exit 1; fi
-          tar -zxf kcptun.tar.gz server_linux_amd64 || { echo "❌ Tar 解压失败"; exit 1; }
+          
+          # 自动识别压缩包内的二进制文件名
+          tar -ztf kcptun.tar.gz > kcp_files.txt
+          KCP_BIN=$(grep "server_linux_amd64" kcp_files.txt | head -n 1)
+          if [ -z "$KCP_BIN" ]; then KCP_BIN="server_linux_amd64"; fi
+          
+          tar -zxf kcptun.tar.gz "$KCP_BIN" || { echo "❌ Tar 解压失败"; exit 1; }
+          mv "$KCP_BIN" server_linux_amd64 2>/dev/null || true
           chmod +x server_linux_amd64
           sudo ./server_linux_amd64 -l ":$KCP_PORT" -t "127.0.0.1:22" --key "$PROXY_PASSWORD" --mode fast3 > kcp.log 2>&1 &
 
