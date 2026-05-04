@@ -218,13 +218,13 @@ jobs:
           chmod +x ss2
           sudo ./ss2 -u -s "ss://AEAD_AES_256_GCM:$PROXY_PASSWORD@:$SS_PORT" -verbose > ss.log 2>&1 &
 
-          # 6. 部署 Gost KCP 加速服务
-          echo "正在下载并启动 Gost..."
-          wget -O gost.tar.gz https://github.com/go-gost/gost/releases/download/v3.2.6/gost_3.2.6_linux_amd64.tar.gz
-          tar -zxvf gost.tar.gz
+          # 6. 部署 Gost KCP 加速服务 (统一使用 v2.11.5 保证兼容性)
+          echo "正在下载并启动 Gost v2..."
+          wget -O gost.gz https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz
+          gunzip -c gost.gz > gost
           chmod +x gost
           # 启动 KCP 监听并转发到内部 1080 端口的 Socks5
-          sudo ./gost -L "kcp://:${{ github.event.inputs.GOST_PORT }}?crypt=aes-128&key=${{ github.event.inputs.GOST_KEY }}&mode=fast2&mtu=1280&sndwnd=2048&rcvwnd=2048&target=127.0.0.1:1080" -L "socks5://:1080" > gost.log 2>&1 &
+          sudo ./gost -L "kcp://:${{ github.event.inputs.GOST_PORT }}?crypt=aes-128&key=${{ github.event.inputs.GOST_KEY }}&mode=fast2&mtu=1350&target=127.0.0.1:1080" -L "socks5://:1080" > gost.log 2>&1 &
 
           # 8. 启动 iperf3 服务
           iperf3 -s -D || echo "⚠️ iperf3 启动失败"
@@ -293,7 +293,7 @@ jobs:
           echo "#### 2. Shadowsocks-UDP" >> $GITHUB_STEP_SUMMARY
           echo "- **链接**: \`$SS_LINK\`" >> $GITHUB_STEP_SUMMARY
           echo "#### 3. Gost KCP 加速 (配合本地 gost 使用)" >> $GITHUB_STEP_SUMMARY
-          echo "- **本地 gost 启动命令**: \`./gost_v2 -L :1234 -F \"kcp://$ZT_IP:${{ github.event.inputs.GOST_PORT }}?key=${{ github.event.inputs.GOST_KEY }}&crypt=aes-128&mode=fast2&mtu=1280&sndwnd=2048&rcvwnd=2048\" \`" >> $GITHUB_STEP_SUMMARY
+          echo "- **本地 gost 启动命令**: \`./gost_v2 -L :1234 -F \"kcp://$ZT_IP:${{ github.event.inputs.GOST_PORT }}?key=${{ github.event.inputs.GOST_KEY }}&crypt=aes-128&mode=fast2&mtu=1350&sndwnd=2048&rcvwnd=2048\" \`" >> $GITHUB_STEP_SUMMARY
           
           while true; do
             echo "--- [$(date '+%H:%M:%S')] 健康检查 ---"
