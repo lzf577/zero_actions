@@ -293,7 +293,7 @@ jobs:
           echo "#### 2. Shadowsocks-UDP" >> $GITHUB_STEP_SUMMARY
           echo "- **链接**: \`$SS_LINK\`" >> $GITHUB_STEP_SUMMARY
           echo "#### 3. Gost KCP 加速 (配合本地 gost 使用)" >> $GITHUB_STEP_SUMMARY
-          echo "- **本地 gost 启动命令**: \`./gost_v2 -L :1234 -F \"kcp://$ZT_IP:${{ github.event.inputs.GOST_PORT }}?key=${{ github.event.inputs.GOST_KEY }}&crypt=aes-128&mode=fast2&mtu=1200&sndwnd=2048&rcvwnd=2048\" \`" >> $GITHUB_STEP_SUMMARY
+          echo "- **本地 gost 启动命令**: \`./gost_v2 -L :1234 -F \"kcp://$ZT_IP:${{ github.event.inputs.GOST_PORT }}?key=${{ github.event.inputs.GOST_KEY }}&crypt=aes-128&mode=fast2&mtu=1280&sndwnd=2048&rcvwnd=2048\" \`" >> $GITHUB_STEP_SUMMARY
           
           while true; do
             echo "--- [$(date '+%H:%M:%S')] 健康检查 ---"
