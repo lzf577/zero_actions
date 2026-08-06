@@ -1,4 +1,4 @@
-name: Actions_TUIC_udp_NO2
+name: Actions_TUIC_udp_NO1
 
 on:
   workflow_dispatch:
