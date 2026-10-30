@@ -1,0 +1,435 @@
+name: Actions_TUIC_udp_NO3
+
+on:
+  workflow_dispatch:
+    inputs:
+      ZT_NETWORK_ID:
+        description: '你的 ZeroTier 网络 ID'
+        required: true
+        default: '645ae69a72a847d5'
+      PROXY_PASSWORD:
+        description: '代理服务的密码 (用于 TUIC)'
+        required: true
+        default: 'password123'
+      TUIC_PORT:
+        description: 'TUIC 监听端口'
+        required: true
+        default: '10004'
+      TUIC_UUID:
+        description: 'TUIC v5 的 UUID'
+        required: true
+        default: '83f6d100-0544-4bd5-88f0-da835c2604af'
+      TUIC_LOG_LEVEL:
+        description: 'TUIC 日志级别 (trace / debug / info / warn / error)'
+        required: true
+        default: 'debug'
+      USE_FIXED_IDENTITY:
+        description: '是否使用固定的 ZeroTier 身份 (true=固定10.3.3.2, false=随机生成新IP避免与第一版冲突)'
+        required: true
+        default: 'true'
+      SS_PORT:
+        description: 'Shadowsocks-UDP 监听端口'
+        required: true
+        default: '10008'
+      GOST_PORT:
+        description: 'Gost KCP 监听端口'
+        required: true
+        default: '10005'
+      GOST_KEY:
+        description: 'Gost KCP 密钥'
+        required: true
+        default: 'password123'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装基础工具与调试诊断包
+        run: |
+          set -e
+          export DEBIAN_FRONTEND=noninteractive
+          
+          echo "修复 Ubuntu 24.04 apt 源及镜像重定向..."
+          if [ -f /etc/apt/apt-mirrors.txt ]; then
+            sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/apt-mirrors.txt
+          fi
+          if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+            sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list.d/ubuntu.sources
+          fi
+          if [ -f /etc/apt/sources.list ]; then
+            sudo sed -i 's/azure.archive.ubuntu.com/archive.ubuntu.com/g' /etc/apt/sources.list
+          fi
+          
+          sudo apt-get clean
+          sudo rm -rf /var/lib/apt/lists/*
+          
+          for i in {1..3}; do
+            echo "尝试更新 apt 源 (第 $i 次)..."
+            sudo timeout 300 apt-get update -o Acquire::ForceIPv4=true && break || sleep 5
+          done
+          
+          sudo timeout 300 apt-get install -y -o Acquire::ForceIPv4=true curl wget ifstat btop iperf3 jq openssl net-tools wireguard-tools resolvconf procps iproute2 file tcpdump dnsutils
+          
+          for tool in curl jq openssl wg; do
+            if ! command -v $tool &> /dev/null; then
+              echo "❌ 错误: 关键工具 $tool 未安装成功"
+              exit 1
+            fi
+          done
+
+      - name: 安装并配置 ZeroTier
+        run: |
+          curl -s https://install.zerotier.com | sudo bash
+          sudo systemctl stop zerotier-one
+          
+          # 根据入参判断是否载入固定身份文件
+          if [ "${{ github.event.inputs.USE_FIXED_IDENTITY }}" = "true" ]; then
+            if [ -f "./identity.secret" ] && [ -f "./identity.public" ]; then
+              echo "使用固定 ZeroTier 身份文件..."
+              sudo cp ./identity.secret /var/lib/zerotier-one/identity.secret
+              sudo cp ./identity.public /var/lib/zerotier-one/identity.public
+              sudo chmod 0600 /var/lib/zerotier-one/identity.secret
+            fi
+          else
+            echo "调试模式：使用随机生成的新 ZeroTier Node 身份，防止与第一版发生 IP/Node 冲突"
+          fi
+          
+          # 加载自建 planet 文件
+          if [ -f "./planet" ]; then
+            sudo cp ./planet /var/lib/zerotier-one/planet
+          fi
+          
+          sudo systemctl start zerotier-one
+          sleep 5
+          if ! command -v zerotier-cli >/dev/null 2>&1 && [ ! -f "/usr/sbin/zerotier-cli" ]; then
+            echo "❌ ZeroTier 安装失败"
+            exit 1
+          fi
+
+      - name: 加入 ZeroTier 网络
+        run: |
+          set -x
+          ZT_CLI=$(which zerotier-cli || echo "/usr/sbin/zerotier-cli")
+          sudo $ZT_CLI join ${{ github.event.inputs.ZT_NETWORK_ID }}
+          echo "等待 ZeroTier 分配局域网 IP..."
+          for i in {1..30}; do
+            ZT_IP=$(sudo $ZT_CLI listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
+            if [[ $ZT_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "✅ 已分配到内网 IPv4: $ZT_IP"
+              break
+            fi
+            sleep 3
+          done
+
+      - name: 配置并开启 SSH 服务
+        run: |
+          set -x
+          sudo apt-get install -y openssh-server
+          echo "runner:kkk" | sudo chpasswd
+          echo "root:kkk" | sudo chpasswd
+          sudo sed -i 's/#PasswordAuthentication yes/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/PasswordAuthentication no/PasswordAuthentication yes/' /etc/ssh/sshd_config
+          sudo sed -i 's/#PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config
+          sudo systemctl restart ssh
+          echo "✅ SSH 服务已开启，密码为: kkk"
+
+      - name: 网络环境优化 (TUIC/UDP 专享调优)
+        run: |
+          set -x
+          # 1. 调大内核 UDP 缓冲区
+          sudo sysctl -w net.core.rmem_max=67108864
+          sudo sysctl -w net.core.wmem_max=67108864
+          sudo sysctl -w net.ipv4.udp_rmem_min=16384
+          sudo sysctl -w net.ipv4.udp_wmem_min=16384
+          sudo sysctl -w net.ipv4.udp_mem='67108864 67108864 67108864'
+          
+          # 2. 禁用反向路径过滤 (解决 ZeroTier UDP 丢包拦截)
+          sudo sysctl -w net.ipv4.conf.all.rp_filter=0
+          sudo sysctl -w net.ipv4.conf.default.rp_filter=0
+          sudo sysctl -w net.ipv4.conf.eth0.rp_filter=0
+          
+          # 3. 开启 BBR 拥塞控制
+          sudo modprobe tcp_bbr || true
+          echo "net.core.default_qdisc=fq" | sudo tee -a /etc/sysctl.conf
+          echo "net.ipv4.tcp_congestion_control=bbr" | sudo tee -a /etc/sysctl.conf
+          sudo sysctl -p || true
+          echo "✅ 内核 UDP/BBR 参数优化成功"
+
+      - name: ZeroTier 链路优化 (MTU 锁定)
+        run: |
+          set -x
+          ZT_DEV=$(ip -o link show | grep "zt" | awk -F': ' '{print $2}' | cut -d'@' -f1 | head -n 1)
+          if [ -n "$ZT_DEV" ]; then
+            sudo ip link set $ZT_DEV mtu 1280
+            echo "✅ ZeroTier 接口 $ZT_DEV MTU 已锁定为 1280"
+          else
+            echo "⚠️ 未找到 ZeroTier 网卡，跳过 MTU 优化"
+          fi
+
+      - name: 部署 TUIC (深度调试版) 与辅助服务
+        env:
+          PROXY_PASSWORD: ${{ github.event.inputs.PROXY_PASSWORD }}
+          TUIC_PORT: ${{ github.event.inputs.TUIC_PORT }}
+          TUIC_UUID: ${{ github.event.inputs.TUIC_UUID }}
+          TUIC_LOG_LEVEL: ${{ github.event.inputs.TUIC_LOG_LEVEL }}
+          SS_PORT: ${{ github.event.inputs.SS_PORT }}
+        run: |
+          set -x
+          ZT_CLI=$(which zerotier-cli || echo "/usr/sbin/zerotier-cli")
+          ZT_IP=$(sudo $ZT_CLI listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
+          
+          if [[ ! $ZT_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ 错误: 无法获取有效的 IPv4 地址 (当前抓取内容: $ZT_IP)"
+            exit 1
+          fi
+
+          # 1. 环境清理与防火墙配置
+          sudo iptables -F
+          sudo ufw disable || true
+          
+          # 2. 证书生成与校验
+          mkdir -p ./certs
+          if [ ! -f "./certs/ca.crt" ] || [ ! -f "./certs/ca.key" ]; then
+            echo "生成自建 CA 根证书..."
+            openssl req -x509 -nodes -newkey rsa:2048 -keyout ./certs/ca.key -out ./certs/ca.crt -subj "/CN=TUIC_CA" -days 3650
+          else
+            echo "复用现有固化 CA 证书"
+          fi
+          
+          # 生成服务端私钥与带 SAN 扩展的证书
+          openssl req -nodes -newkey rsa:2048 -keyout ./certs/server.key -out ./certs/server.csr -subj "/CN=baidu.com"
+          printf "subjectAltName=DNS:baidu.com,IP:%s\nextendedKeyUsage=serverAuth\nbasicConstraints=CA:FALSE\n" "$ZT_IP" > ./certs/ext.cnf
+          openssl x509 -req -in ./certs/server.csr -CA ./certs/ca.crt -CAkey ./certs/ca.key -CAcreateserial -out ./certs/server.crt -days 3650 -extfile ./certs/ext.cnf
+          cat ./certs/server.crt ./certs/ca.crt > ./certs/fullchain.crt
+          
+          # 证书有效性自检
+          echo "=== 证书链验证结果 ==="
+          openssl verify -CAfile ./certs/ca.crt ./certs/server.crt
+          
+          # 3. 下载 TUIC Server 与 TUIC Client (供本地回环自测)
+          TAG_TUIC=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" "https://api.github.com/repos/tuic-protocol/tuic/releases/latest" | jq -r ".tag_name")
+          if [ -z "$TAG_TUIC" ] || [ "$TAG_TUIC" == "null" ]; then TAG_TUIC="tuic-server-1.0.0"; fi
+          TUIC_URL="https://github.com/tuic-protocol/tuic/releases/download/${TAG_TUIC}/${TAG_TUIC}-x86_64-unknown-linux-gnu"
+          echo "下载 TUIC Server: $TUIC_URL"
+          curl -L -o tuic "$TUIC_URL"
+          chmod +x tuic
+          
+          # 下载对应的 tuic-client 用于自动化端到端测试
+          CLIENT_TAG="tuic-client-1.0.0"
+          CLIENT_URL="https://github.com/tuic-protocol/tuic/releases/download/${CLIENT_TAG}/${CLIENT_TAG}-x86_64-unknown-linux-gnu"
+          echo "下载 TUIC Client 调试工具: $CLIENT_URL"
+          curl -L -o tuic-client "$CLIENT_URL" || true
+          [ -f "./tuic-client" ] && chmod +x tuic-client
+
+          # 4. 生成 tuic 服务端配置 (开启调试级别日志)
+          cat <<EOF > tuic.json
+          {
+            "server": "0.0.0.0:$TUIC_PORT",
+            "users": {
+              "$TUIC_UUID": "$PROXY_PASSWORD"
+            },
+            "certificate": "$(pwd)/certs/fullchain.crt",
+            "private_key": "$(pwd)/certs/server.key",
+            "congestion_control": "bbr",
+            "alpn": ["h3"],
+            "send_window": 16777216,
+            "receive_window": 16777216,
+            "gc_interval": "10s",
+            "log_level": "${TUIC_LOG_LEVEL}"
+          }
+          EOF
+          
+          echo "=== TUIC 服务端配置 ==="
+          cat tuic.json
+          
+          # 启动 TUIC Server
+          touch tuic.log
+          sudo ./tuic -c tuic.json > tuic.log 2>&1 &
+          sleep 2
+          
+          # 实时将 tuic.log 管道输出到控制台方便在 Actions 界面实时排错
+          tail -f tuic.log &
+          TAIL_PID=$!
+          echo "TAIL_PID=$TAIL_PID" >> $GITHUB_ENV
+          
+          # 5. 部署 Shadowsocks-UDP 作为对照组
+          wget -O ss2.gz https://github.com/shadowsocks/go-shadowsocks2/releases/download/v0.1.5/shadowsocks2-linux.gz || true
+          gzip -d -c ss2.gz > ss2 2>/dev/null || curl -L -o ss2 https://github.com/shadowsocks/go-shadowsocks2/releases/download/v0.1.5/go-shadowsocks2-linux-amd64
+          chmod +x ss2
+          sudo ./ss2 -u -s "ss://AEAD_AES_256_GCM:$PROXY_PASSWORD@:$SS_PORT" -verbose > ss.log 2>&1 &
+
+          # 6. 部署 Gost KCP 服务
+          wget -O gost.gz https://github.com/ginuerzh/gost/releases/download/v2.11.5/gost-linux-amd64-2.11.5.gz
+          gunzip -c gost.gz > gost
+          chmod +x gost
+          sudo ./gost -L "kcp://:${{ github.event.inputs.GOST_PORT }}?crypt=aes-128&key=${{ github.event.inputs.GOST_KEY }}&mode=fast2&mtu=1280&target=127.0.0.1:1080" -L "socks5://:1080" > gost.log 2>&1 &
+
+          # 7. 启动 iperf3
+          iperf3 -s -D || echo "⚠️ iperf3 启动失败"
+          
+          # 8. 转发与端口放行
+          sudo sysctl -w net.ipv4.ip_forward=1
+          sudo iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+          sudo iptables -A INPUT -p udp --dport $TUIC_PORT -j ACCEPT
+          sudo iptables -A INPUT -p tcp --dport $TUIC_PORT -j ACCEPT
+          sudo iptables -A INPUT -p udp --dport $SS_PORT -j ACCEPT
+          sudo iptables -A INPUT -p udp --dport ${{ github.event.inputs.GOST_PORT }} -j ACCEPT
+          sudo iptables -A INPUT -p tcp --dport 5201 -j ACCEPT
+          sudo iptables -A INPUT -p udp --dport 5201 -j ACCEPT
+
+          sleep 3
+          echo "=== 服务监听状态 ==="
+          sudo netstat -tunlp
+
+      - name: TUIC 客户端本地回环自测 (End-to-End Handshake Debug)
+        env:
+          PROXY_PASSWORD: ${{ github.event.inputs.PROXY_PASSWORD }}
+          TUIC_PORT: ${{ github.event.inputs.TUIC_PORT }}
+          TUIC_UUID: ${{ github.event.inputs.TUIC_UUID }}
+        run: |
+          set -x
+          echo "=== 开始 TUIC 本地端到端回环验证 ==="
+          if [ -f "./tuic-client" ]; then
+            cat <<EOF > tuic_client_test.json
+            {
+              "relay": {
+                "server": "127.0.0.1:$TUIC_PORT",
+                "ip": "127.0.0.1",
+                "uuid": "$TUIC_UUID",
+                "password": "$PROXY_PASSWORD",
+                "certificates": ["$(pwd)/certs/ca.crt"],
+                "alpn": ["h3"],
+                "disable_sni": true,
+                "zero_rtt_handshake": false
+              },
+              "local": {
+                "server": "127.0.0.1:10808"
+              },
+              "log_level": "debug"
+            }
+          EOF
+            echo "启动测试客户端..."
+            ./tuic-client -c tuic_client_test.json > tuic_client_test.log 2>&1 &
+            CLIENT_TEST_PID=$!
+            sleep 3
+            
+            echo "通过 TUIC 本地 Socks5 (10808) 转发发起 HTTP 请求测试..."
+            HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --socks5 127.0.0.1:10808 --max-time 8 http://www.google.com || echo "000")
+            echo "测试请求响应状态码: $HTTP_CODE"
+            if [ "$HTTP_CODE" != "000" ]; then
+              echo "✅ TUIC 端到端代理握手测试完全通过！状态码: $HTTP_CODE"
+            else
+              echo "⚠️ 本地测试未完成或超时，查看客户端测试日志:"
+              cat tuic_client_test.log || true
+            fi
+            kill $CLIENT_TEST_PID 2>/dev/null || true
+          else
+            echo "未下载到 tuic-client，跳过端到端测试"
+          fi
+
+      - name: 导入监控脚本到 /root
+        run: |
+          set -x
+          sudo cp ./monitor.sh /root/monitor.sh
+          sudo chmod +x /root/monitor.sh
+          echo "✅ 监控脚本已导入到 /root/monitor.sh"
+
+      - name: 维持运行、诊断日志流与状态总结
+        env:
+          PROXY_PASSWORD: ${{ github.event.inputs.PROXY_PASSWORD }}
+          TUIC_PORT: ${{ github.event.inputs.TUIC_PORT }}
+          TUIC_UUID: ${{ github.event.inputs.TUIC_UUID }}
+          SS_PORT: ${{ github.event.inputs.SS_PORT }}
+        run: |
+          set -x
+          ZT_CLI=$(which zerotier-cli || echo "/usr/sbin/zerotier-cli")
+          ZT_IP=$(sudo $ZT_CLI listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
+          
+          TUIC_LINK="tuic://${{ github.event.inputs.TUIC_UUID }}:${{ github.event.inputs.PROXY_PASSWORD }}@${ZT_IP}:${{ github.event.inputs.TUIC_PORT }}?insecure=1&alpn=h3&sni=baidu.com#A-TUIC5-V3"
+          SS_LINK="ss://$(echo -n "aes-256-gcm:${{ github.event.inputs.PROXY_PASSWORD }}" | base64 -w 0)@${ZT_IP}:${{ github.event.inputs.SS_PORT }}#A-SS-UDP-V3"
+
+          echo "### 🛠️ 第三版 (TUIC 纯净免二维码模式) 部署完成" >> $GITHUB_STEP_SUMMARY
+          echo "#### 1. TUIC v5 节点信息" >> $GITHUB_STEP_SUMMARY
+          echo "- **内网 IP**: \`$ZT_IP\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **监听端口**: \`${{ github.event.inputs.TUIC_PORT }}\` (UDP)" >> $GITHUB_STEP_SUMMARY
+          echo "- **UUID**: \`${{ github.event.inputs.TUIC_UUID }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **密码**: \`${{ github.event.inputs.PROXY_PASSWORD }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **调试日志级别**: \`${{ github.event.inputs.TUIC_LOG_LEVEL }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **TUIC 链接**: \`$TUIC_LINK\`" >> $GITHUB_STEP_SUMMARY
+          
+          echo "#### 2. Root CA 证书 (\`ca.crt\`)" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat ./certs/ca.crt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          echo "#### 3. 路由器 tuic-client 转发配置 (\`/etc/openclash/tuic_client.json\`)" >> $GITHUB_STEP_SUMMARY
+          echo '```json' >> $GITHUB_STEP_SUMMARY
+          echo "{" >> $GITHUB_STEP_SUMMARY
+          echo '  "relay": {' >> $GITHUB_STEP_SUMMARY
+          echo "    \"server\": \"baidu.com:${{ github.event.inputs.TUIC_PORT }}\"," >> $GITHUB_STEP_SUMMARY
+          echo "    \"ip\": \"$ZT_IP\"," >> $GITHUB_STEP_SUMMARY
+          echo "    \"uuid\": \"${{ github.event.inputs.TUIC_UUID }}\"," >> $GITHUB_STEP_SUMMARY
+          echo "    \"password\": \"${{ github.event.inputs.PROXY_PASSWORD }}\"," >> $GITHUB_STEP_SUMMARY
+          echo '    "certificates": ["/etc/openclash/ca.crt"],' >> $GITHUB_STEP_SUMMARY
+          echo '    "alpn": ["h3"]' >> $GITHUB_STEP_SUMMARY
+          echo '  },' >> $GITHUB_STEP_SUMMARY
+          echo '  "local": {' >> $GITHUB_STEP_SUMMARY
+          echo "    \"server\": \"127.0.0.1:${{ github.event.inputs.TUIC_PORT }}\"" >> $GITHUB_STEP_SUMMARY
+          echo '  }' >> $GITHUB_STEP_SUMMARY
+          echo "}" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          
+          echo "#### 4. OpenClash / Clash Meta 调试配置" >> $GITHUB_STEP_SUMMARY
+          echo '```yaml' >> $GITHUB_STEP_SUMMARY
+          echo "- name: A-TUIC5-V3" >> $GITHUB_STEP_SUMMARY
+          echo "  type: tuic" >> $GITHUB_STEP_SUMMARY
+          echo "  server: $ZT_IP" >> $GITHUB_STEP_SUMMARY
+          echo "  port: ${{ github.event.inputs.TUIC_PORT }}" >> $GITHUB_STEP_SUMMARY
+          echo "  uuid: ${{ github.event.inputs.TUIC_UUID }}" >> $GITHUB_STEP_SUMMARY
+          echo "  password: ${{ github.event.inputs.PROXY_PASSWORD }}" >> $GITHUB_STEP_SUMMARY
+          echo "  alpn: [h3]" >> $GITHUB_STEP_SUMMARY
+          echo "  sni: baidu.com" >> $GITHUB_STEP_SUMMARY
+          echo "  skip-cert-verify: true" >> $GITHUB_STEP_SUMMARY
+          echo "  congestion-controller: bbr" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+
+          echo "#### 5. 常见问题排查与调试命令 (SSH root@$ZT_IP)" >> $GITHUB_STEP_SUMMARY
+          echo "- 查看实时 TUIC 握手日志: \`tail -f tuic.log\`" >> $GITHUB_STEP_SUMMARY
+          echo "- 抓包分析 TUIC UDP 流量: \`tcpdump -i any udp port ${{ github.event.inputs.TUIC_PORT }} -nn -v\`" >> $GITHUB_STEP_SUMMARY
+          echo "- 查看系统 UDP 丢包统计: \`netstat -su\`" >> $GITHUB_STEP_SUMMARY
+          
+          # 循环守护与健康输出
+          LOOP_COUNT=0
+          while true; do
+            LOOP_COUNT=$((LOOP_COUNT + 1))
+            echo "--- [$(date '+%H:%M:%S')] TUIC 调试监控巡检 (第 $LOOP_COUNT 轮) ---"
+            
+            # 进程状态
+            if pgrep -f "./tuic" >/dev/null; then
+              echo "● TUIC 服务运行中 (PID: $(pgrep -f './tuic' | head -n 1))"
+            else
+              echo "❌ 警告: TUIC 进程意外退出，正在尝试重启并记录日志..."
+              [[ -f "./tuic" ]] && sudo ./tuic -c tuic.json >> tuic.log 2>&1 &
+            fi
+            
+            # 端口与网络套接字状态
+            ss -unlp | grep ":${{ github.event.inputs.TUIC_PORT }} " || echo "⚠️ 警告: TUIC UDP 端口未处于监听状态"
+            
+            # 最近 10 条 TUIC 日志打印
+            echo "--- [最近 TUIC 运行日志] ---"
+            tail -n 10 tuic.log 2>/dev/null || true
+            echo "-----------------------------"
+            
+            # 保活 Shadowsocks 与 iperf3
+            pgrep -f "ss2" >/dev/null || ( [[ -f "./ss2" ]] && sudo ./ss2 -u -s "ss://AEAD_AES_256_GCM:$PROXY_PASSWORD@:$SS_PORT" -verbose > ss.log 2>&1 & )
+            pgrep -x "iperf3" >/dev/null || iperf3 -s -D
+            
+            sleep 60
+          done
