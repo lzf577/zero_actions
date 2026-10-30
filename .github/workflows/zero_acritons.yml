@@ -191,8 +191,10 @@ jobs:
           
           # 2. 证书生成 (标准双层 CA + 服务端完整信任链，兼容 Rustls 与 QUIC 验证)
           mkdir -p ./certs
-          # 生成 Root CA 证书
-          openssl req -x509 -nodes -newkey rsa:2048 -keyout ./certs/ca.key -out ./certs/ca.crt -subj "/CN=TUIC_CA" -days 3650
+          # 若仓库中已预置固化的 CA 证书与私钥，则优先复用，保证路由器客户端无需重复导入证书
+          if [ ! -f "./certs/ca.crt" ] || [ ! -f "./certs/ca.key" ]; then
+            openssl req -x509 -nodes -newkey rsa:2048 -keyout ./certs/ca.key -out ./certs/ca.crt -subj "/CN=TUIC_CA" -days 3650
+          fi
           # 生成服务端密钥和 CSR
           openssl req -nodes -newkey rsa:2048 -keyout ./certs/server.key -out ./certs/server.csr -subj "/CN=baidu.com"
           # 配置 SAN 扩展信息与服务端用途
