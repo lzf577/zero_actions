@@ -91,14 +91,19 @@ jobs:
           
           # 根据入参判断是否载入固定身份文件
           if [ "${{ github.event.inputs.USE_FIXED_IDENTITY }}" = "true" ]; then
-            if [ -f "./identity.secret" ] && [ -f "./identity.public" ]; then
-              echo "使用固定 ZeroTier 身份文件..."
+            if [ -f "./nodes/node_3/identity.secret" ] && [ -f "./nodes/node_3/identity.public" ]; then
+              echo "使用 node_3 专属 ZeroTier 身份文件 (固定 10.3.3.2)..."
+              sudo cp ./nodes/node_3/identity.secret /var/lib/zerotier-one/identity.secret
+              sudo cp ./nodes/node_3/identity.public /var/lib/zerotier-one/identity.public
+              sudo chmod 0600 /var/lib/zerotier-one/identity.secret
+            elif [ -f "./identity.secret" ] && [ -f "./identity.public" ]; then
+              echo "使用根目录 ZeroTier 身份文件..."
               sudo cp ./identity.secret /var/lib/zerotier-one/identity.secret
               sudo cp ./identity.public /var/lib/zerotier-one/identity.public
               sudo chmod 0600 /var/lib/zerotier-one/identity.secret
             fi
           else
-            echo "调试模式：使用随机生成的新 ZeroTier Node 身份，防止与第一版发生 IP/Node 冲突"
+            echo "调试模式：使用随机生成的新 ZeroTier Node 身份"
           fi
           
           # 加载自建 planet 文件
