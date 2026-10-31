@@ -6,6 +6,20 @@ mode: rule
 log-level: info
 external-controller: 0.0.0.0:9090
 proxies:
+- name: A-SS-V4
+  server: 10.3.4.2
+  port: 10008
+  type: ss
+  cipher: aes-256-gcm
+  password: password123
+  udp: true
+- name: A-SS-V5
+  server: 10.3.5.2
+  port: 10008
+  type: ss
+  cipher: aes-256-gcm
+  password: password123
+  udp: true
 - name: A-SS-UDP
   server: 10.3.3.2
   port: 10008
@@ -23,9 +37,22 @@ proxy-groups:
 - name: "\U0001F680 节点选择"
   type: select
   proxies:
+  - "\U0001F504 自动双轨容灾"
+  - A-SS-V4
+  - A-SS-V5
   - A-SS-UDP
   - A-TUIC5
   - DIRECT
+- name: "\U0001F504 自动双轨容灾"
+  type: fallback
+  url: "http://www.gstatic.com/generate_204"
+  interval: 8
+  timeout: 1500
+  max-failed-times: 1
+  lazy: false
+  proxies:
+  - A-SS-V4
+  - A-SS-V5
 - name: "\U0001F3AF 全球直连"
   type: select
   proxies:
