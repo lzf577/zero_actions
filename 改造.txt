@@ -1,0 +1,10 @@
+第一步：
+	1、先保持目标zero_acritons_3不变，保住根基。
+	2、复制zero_acritons_3为zero_acritons_4和zero_acritons_5
+	3、改造zero_acritons_4（5）为自循环
+	4、新增网段10.3.4.0和10.3.5.0
+第二步：
+	1、路由器zerotier新增网段10.3.4.0和10.3.5.0
+	2、改造clash，无感切换10.3.4.0和10.3.5.0
+第三步：
+	完成切断ero_acritons_3

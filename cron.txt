@@ -1,0 +1,4 @@
+0 0 * * * sleep 30 && /root/cron/restartactions1.sh >> /root/cron/log1.log 2>&1
+0 6 * * * sleep 30 && /root/cron/restartactions2.sh >> /root/cron/log2.log 2>&1
+0 12 * * * sleep 30 && /root/cron/restartactions3.sh >> /root/cron/log3.log 2>&1
+0 18 * * * sleep 30 && /root/cron/restartactions4.sh >> /root/cron/log4.log 2>&1
