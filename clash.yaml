@@ -6,6 +6,16 @@ mode: rule
 log-level: info
 external-controller: 0.0.0.0:9090
 proxies:
+- name: A-TUIC5-V4
+  type: socks5
+  server: 127.0.0.1
+  port: 10014
+  udp: true
+- name: A-TUIC5-V5
+  type: socks5
+  server: 127.0.0.1
+  port: 10015
+  udp: true
 - name: A-SS-V4
   server: 10.3.4.2
   port: 10008
@@ -27,7 +37,7 @@ proxies:
   cipher: aes-256-gcm
   password: password123
   udp: true
-- name: A-TUIC5
+- name: A-TUIC5-V3
   type: socks5
   server: 127.0.0.1
   port: 10004
@@ -38,10 +48,13 @@ proxy-groups:
   type: select
   proxies:
   - "\U0001F504 自动双轨容灾"
+  - "\u26a1 TUIC双轨容灾"
+  - A-TUIC5-V4
+  - A-TUIC5-V5
   - A-SS-V4
   - A-SS-V5
+  - A-TUIC5-V3
   - A-SS-UDP
-  - A-TUIC5
   - DIRECT
 - name: "\U0001F504 自动双轨容灾"
   type: fallback
@@ -51,8 +64,20 @@ proxy-groups:
   max-failed-times: 1
   lazy: false
   proxies:
+  - A-TUIC5-V4
+  - A-TUIC5-V5
   - A-SS-V4
   - A-SS-V5
+- name: "\u26a1 TUIC双轨容灾"
+  type: fallback
+  url: "http://www.gstatic.com/generate_204"
+  interval: 8
+  timeout: 1500
+  max-failed-times: 1
+  lazy: false
+  proxies:
+  - A-TUIC5-V4
+  - A-TUIC5-V5
 - name: "\U0001F3AF 全球直连"
   type: select
   proxies:
