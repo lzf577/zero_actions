@@ -43,8 +43,7 @@ try:
     for r in in_progress:
         print(f'  ● [运行中/保留] #{r[\"id\"]} | {r[\"name\"]}')
         
-    print(f'🔒 节点 3 (NO3) 专属记录: {len(no3_runs)} 个 (已受到绝对豁免保护，不作删除)')
-    print(f'当前 NO4/NO5 已完成任务: {len(completed)} 个 (设定保留最近 {keep} 条)')
+    print(f'当前已完成任务: {len(completed)} 个 (设定保留最近 {keep} 条)')
     
     to_keep = completed[:keep]
     for r in to_keep:
