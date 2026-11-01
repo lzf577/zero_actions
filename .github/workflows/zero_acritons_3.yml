@@ -39,6 +39,10 @@ on:
         description: 'Gost KCP 密钥'
         required: true
         default: 'password123'
+      PAT_TOKEN:
+        description: '用于自动清理陈旧历史运行记录的 GitHub PAT (若已配置 Secrets.GH_PAT 可留空)'
+        required: false
+        default: ''
 
 concurrency:
   group: zero_actions_node_3
@@ -49,6 +53,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
     steps:
@@ -452,3 +457,41 @@ jobs:
             
             sleep 60
           done
+
+      - name: 自动清理陈旧历史运行记录 (保持面板整洁)
+        if: always()
+        run: |
+          python3 -c "
+          import urllib.request, json
+          token = '${{ secrets.GH_PAT || github.event.inputs.PAT_TOKEN || secrets.GITHUB_TOKEN }}'
+          if not token:
+              exit(0)
+          repo = '${{ github.repository }}'
+          current_run_id = ${{ github.run_id }}
+          current_workflow = '${{ github.workflow }}'
+          try:
+              req = urllib.request.Request(f'https://api.github.com/repos/{repo}/actions/runs?per_page=100', headers={
+                  'Authorization': f'Bearer {token}',
+                  'Accept': 'application/vnd.github+json'
+              })
+              with urllib.request.urlopen(req) as resp:
+                  runs = json.loads(resp.read().decode()).get('workflow_runs', [])
+              
+              completed = [
+                  r for r in runs 
+                  if r.get('status') == 'completed' 
+                  and r.get('id') != current_run_id 
+                  and r.get('name') == current_workflow
+              ]
+              to_delete = completed[2:]
+              
+              for r in to_delete:
+                  del_req = urllib.request.Request(f'https://api.github.com/repos/{repo}/actions/runs/{r[\"id\"]}', headers={
+                      'Authorization': f'Bearer {token}',
+                      'Accept': 'application/vnd.github+json'
+                  }, method='DELETE')
+                  urllib.request.urlopen(del_req)
+                  print(f'已自动清理旧记录 #{r[\"id\"]}')
+          except Exception as e:
+              print('自动清理静默跳过:', e)
+          " || true
