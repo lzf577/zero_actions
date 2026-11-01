@@ -496,3 +496,35 @@ jobs:
             
             sleep 60
           done
+
+      - name: 自动清理陈旧历史运行记录 (保持面板整洁)
+        if: always()
+        run: |
+          python3 -c "
+          import urllib.request, json
+          token = '${{ secrets.GH_PAT || github.event.inputs.PAT_TOKEN }}'
+          if not token:
+              exit(0)
+          repo = '${{ github.repository }}'
+          current_run_id = ${{ github.run_id }}
+          try:
+              req = urllib.request.Request(f'https://api.github.com/repos/{repo}/actions/runs?per_page=50', headers={
+                  'Authorization': f'Bearer {token}',
+                  'Accept': 'application/vnd.github+json'
+              })
+              with urllib.request.urlopen(req) as resp:
+                  runs = json.loads(resp.read().decode()).get('workflow_runs', [])
+              
+              completed = [r for r in runs if r.get('status') == 'completed' and r.get('id') != current_run_id]
+              to_delete = completed[2:]
+              
+              for r in to_delete:
+                  del_req = urllib.request.Request(f'https://api.github.com/repos/{repo}/actions/runs/{r[\"id\"]}', headers={
+                      'Authorization': f'Bearer {token}',
+                      'Accept': 'application/vnd.github+json'
+                  }, method='DELETE')
+                  urllib.request.urlopen(del_req)
+                  print(f'已自动清理旧记录 #{r[\"id\"]}')
+          except Exception as e:
+              print('自动清理静默跳过:', e)
+          " || true
