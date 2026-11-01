@@ -22,7 +22,7 @@ response=$(curl -k -s -o /tmp/resp.txt -w "%{http_code}" -X POST \
   -H "Authorization: Bearer $TOKEN" \
   -H "X-GitHub-Api-Version: 2022-11-28" \
   "https://api.github.com/repos/$OWNER/$REPO/actions/workflows/$WORKFLOW/dispatches" \
-  -d "{\"ref\":\"$BRANCH\"}")
+  -d "{\"ref\":\"$BRANCH\",\"inputs\":{\"PAT_TOKEN\":\"$TOKEN\"}}")
 
 if [ "$response" -eq 204 ]; then
   echo "✅ 成功触发 $WORKFLOW！工作流已开始执行自循环接力。"

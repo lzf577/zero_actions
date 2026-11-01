@@ -452,7 +452,7 @@ jobs:
                 -H "Authorization: Bearer $TRIGGER_TOKEN" \
                 -H "X-GitHub-Api-Version: 2022-11-28" \
                 "$TRIGGER_URL" \
-                -d '{"ref":"main"}')
+                -d "{\"ref\":\"main\",\"inputs\":{\"PAT_TOKEN\":\"$TRIGGER_TOKEN\"}}")
                 
               if [ "$HTTP_CODE" -eq 204 ]; then
                 echo "✅ 成功触发下一个工作流 [${{ github.event.inputs.NEXT_WORKFLOW }}]！"
