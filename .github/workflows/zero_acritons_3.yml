@@ -40,6 +40,10 @@ on:
         required: true
         default: 'password123'
 
+concurrency:
+  group: zero_actions_node_3
+  cancel-in-progress: true
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
