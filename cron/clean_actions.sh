@@ -37,13 +37,22 @@ try:
     
     # 区分进行中和已完成的
     in_progress = [r for r in runs if r.get('status') != 'completed']
-    completed = [r for r in runs if r.get('status') == 'completed']
+    # 豁免并保护 NO3 节点记录
+    no3_runs = [r for r in runs if 'NO3' in r.get('name', '') or 'zero_acritons_3' in r.get('path', '')]
+    # 仅针对自循环节点 (NO4/NO5) 进行已完成历史清理
+    completed = [
+        r for r in runs 
+        if r.get('status') == 'completed' 
+        and ('NO4' in r.get('name', '') or 'NO5' in r.get('name', '')) 
+        and 'NO3' not in r.get('name', '')
+    ]
     
     print(f'当前运行中任务: {len(in_progress)} 个')
     for r in in_progress:
         print(f'  ● [运行中/保留] #{r[\"id\"]} | {r[\"name\"]}')
         
-    print(f'当前已完成任务: {len(completed)} 个 (设定保留最近 {keep} 条)')
+    print(f'🔒 节点 3 (NO3) 专属记录: {len(no3_runs)} 个 (已受到绝对豁免保护，不作删除)')
+    print(f'当前 NO4/NO5 已完成任务: {len(completed)} 个 (设定保留最近 {keep} 条)')
     
     to_keep = completed[:keep]
     for r in to_keep:
