@@ -116,6 +116,9 @@ jobs:
               sudo cp ./nodes/node_4/identity.secret /var/lib/zerotier-one/identity.secret
               sudo cp ./nodes/node_4/identity.public /var/lib/zerotier-one/identity.public
               sudo chmod 0600 /var/lib/zerotier-one/identity.secret
+            else
+              echo "❌ 错误: 未找到 node_4 专属身份文件 (nodes/node_4/identity.secret)"
+              exit 1
             fi
           else
             echo "调试模式：使用随机生成的新 ZeroTier Node 身份"
@@ -139,6 +142,7 @@ jobs:
           ZT_CLI=$(which zerotier-cli || echo "/usr/sbin/zerotier-cli")
           sudo $ZT_CLI join ${{ github.event.inputs.ZT_NETWORK_ID }}
           echo "等待 ZeroTier 分配局域网 IP..."
+          ZT_IP=""
           for i in {1..30}; do
             ZT_IP=$(sudo $ZT_CLI listnetworks | grep ${{ github.event.inputs.ZT_NETWORK_ID }} | awk '{print $NF}' | tr ',' '\n' | grep -v ':' | head -n 1 | cut -d/ -f1)
             if [[ $ZT_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -147,6 +151,12 @@ jobs:
             fi
             sleep 3
           done
+
+          if [[ ! $ZT_IP =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "❌ 错误: 超时无法获取到有效的内网 IPv4 地址！"
+            echo "当前网络列表状态: $(sudo $ZT_CLI listnetworks)"
+            exit 1
+          fi
 
       - name: 配置并开启 SSH 服务
         run: |
